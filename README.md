@@ -1,6 +1,6 @@
 # Pytorch-YOLOv4
 
-This repository is forked from Tianxiaomo/pytorch-YOLOv4 and used to add some comments for study.
+This repository is forked from Tianxiaomo/pytorch-YOLOv4 and used to add some comments for personal study.
 
 - [ ] tool/darknet2pytorch.py
 - [ ] train.py
