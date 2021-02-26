@@ -36,7 +36,7 @@ Cfg.hue = .1
 Cfg.learning_rate = 0.00261  # 可以被命令行的值覆盖，最终的学习率还要除以batch size
 Cfg.burn_in = 60  # 指学习率逐渐增长到设定值的分界点，iter而不是epoch
 Cfg.max_batches = 500500  # 没用到
-Cfg.steps = [1800, 2400]  # 指学习率阶梯更新分界点，iter而不是epoch
+Cfg.steps = [1200, 1500]  # 指学习率阶梯更新分界点，iter而不是epoch
 Cfg.policy = Cfg.steps  # 没用到
 Cfg.scales = .1, .1  # 没用到
 
@@ -53,7 +53,7 @@ Cfg.flip = 1
 Cfg.blur = 0
 Cfg.gaussian = 0
 Cfg.boxes = 60  # box num
-Cfg.TRAIN_EPOCHS = 500  # 训练的epoch数
+Cfg.TRAIN_EPOCHS = 300
 Cfg.train_label = os.path.join(_BASE_DIR, 'data', 'train.txt')
 Cfg.val_label = os.path.join(_BASE_DIR, 'data' ,'val.txt')
 Cfg.TRAIN_OPTIMIZER = 'adam'  # 可以被命令行的值覆盖
