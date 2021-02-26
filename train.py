@@ -144,7 +144,7 @@ class Yolo_loss(nn.Module):  # 一个pytorch模块，计算loss，独立于主�
         self.masked_anchors, self.ref_anchors, self.grid_x, self.grid_y, self.anchor_w, self.anchor_h = [], [], [], [], [], []
 
         for i in range(3):
-            # anchor的长和宽除以步长，得到的应该是输出维度上的对应长宽，注意得到的数据类型是浮点
+            # anchor的长和宽除以步长，得到的all_anchors_grid应该是输出维度上的对应长宽，注意得到的数据类型是浮点
             all_anchors_grid = [(w / self.strides[i], h / self.strides[i]) for w, h in self.anchors]  
             print(all_anchors_grid[0][0])
             # 根据mask，选出对应组的anchors，masked_anchors的shape:(3, 2)
@@ -191,19 +191,24 @@ class Yolo_loss(nn.Module):  # 一个pytorch模块，计算loss，独立于主�
         target = torch.zeros(batchsize, self.n_anchors, fsize, fsize, n_ch).to(self.device)
 
         # labels = labels.cpu().data
+        # labels shape: (B, N, 5)，得到的nlabel shape: (B,)
         nlabel = (labels.sum(dim=2) > 0).sum(dim=1)  # number of objects
 
-        truth_x_all = (labels[:, :, 2] + labels[:, :, 0]) / (self.strides[output_id] * 2)
-        truth_y_all = (labels[:, :, 3] + labels[:, :, 1]) / (self.strides[output_id] * 2)
-        truth_w_all = (labels[:, :, 2] - labels[:, :, 0]) / self.strides[output_id]
-        truth_h_all = (labels[:, :, 3] - labels[:, :, 1]) / self.strides[output_id]
+        # 算出在输出维度上的x,y,w,h
+        truth_x_all = (labels[:, :, 2] + labels[:, :, 0]) / (self.strides[output_id] * 2)  # (xmax+xmin)/2/s
+        truth_y_all = (labels[:, :, 3] + labels[:, :, 1]) / (self.strides[output_id] * 2)  # (ymax+ymin)/2/s
+        truth_w_all = (labels[:, :, 2] - labels[:, :, 0]) / self.strides[output_id]  # (xmax-xmin)/s
+        truth_h_all = (labels[:, :, 3] - labels[:, :, 1]) / self.strides[output_id]  # (ymax-ymin)/s
+        # 四舍五入取整，找到标签对应单元(i,j)
         truth_i_all = truth_x_all.to(torch.int16).cpu().numpy()
         truth_j_all = truth_y_all.to(torch.int16).cpu().numpy()
 
-        for b in range(batchsize):
-            n = int(nlabel[b])
+        for b in range(batchsize):  # batch里的每张图片分别进行
+            n = int(nlabel[b])  # 当前图片上的方框标签数
             if n == 0:
-                continue
+                continue  # 如果当前图片没有标签，直接跳过？
+            # truth_box shape:(N, 4) x,y,w,h
+            # 这里x,y保持为0，所以truth_box还在原点
             truth_box = torch.zeros(n, 4).to(self.device)
             truth_box[:n, 2] = truth_w_all[b, :n]
             truth_box[:n, 3] = truth_h_all[b, :n]
@@ -211,22 +216,36 @@ class Yolo_loss(nn.Module):  # 一个pytorch模块，计算loss，独立于主�
             truth_j = truth_j_all[b, :n]
 
             # calculate iou between truth and reference anchors
+            # truth_box shape:(N, 4) x,y,w,h
+            # ref_anchors shape:(9, 4) x,y,w,h
+            # 这里truth_box和ref_anchors的前两列元素都是0，相当于是移到原点进行IOU的计算
+            # 因为这里是计算anchor和标签的IOU，所以移到原点计算的结果是相同的，可以使计算更加简便
+            # 这里的CIOU是一种最新提出的计算IOU的方式，方法内部的具体算法先暂不深究
+            # 返回的anchor_ious_all shape:(N, 9)
+            # 初看可能会问：这里xyxy不应该是False吗？ 画图看看就会发现，xyxy=True是左上角对齐，反之是中心对齐，都是正确的，但结果是否就完全相同可能取决于IOU是哪种
             anchor_ious_all = bboxes_iou(truth_box.cpu(), self.ref_anchors[output_id], CIoU=True)
 
             # temp = bbox_iou(truth_box.cpu(), self.ref_anchors[output_id])
 
+            # 找到IOU每行最大值，返回的best_n_all shape为(N,)
             best_n_all = anchor_ious_all.argmax(dim=1)
+            # 确定与该truth_box具有最大iou的是哪一组anchor
             best_n = best_n_all % 3
+            # 返回的是一个逻辑tensor，形状为(N,)，表示与该truth_box具有最大iou的anchor是否在当前组中
             best_n_mask = ((best_n_all == self.anch_masks[output_id][0]) |
                            (best_n_all == self.anch_masks[output_id][1]) |
                            (best_n_all == self.anch_masks[output_id][2]))
 
             if sum(best_n_mask) == 0:
-                continue
+                continue  # 如果没有符合条件的truth_box，直接跳过
 
+            # truth_box shape:(N, 4) x,y,w,h
+            # truth_box的中心移到真正的位置
             truth_box[:n, 0] = truth_x_all[b, :n]
             truth_box[:n, 1] = truth_y_all[b, :n]
 
+            # 网络预测的box和truth_box进行iou计算
+            # FIXME: 前面anchor和truth_box计算用的是CIoU=True，这里为什么改为了普通IOU
             pred_ious = bboxes_iou(pred[b].view(-1, 4), truth_box, xyxy=False)
             pred_best_iou, _ = pred_ious.max(dim=1)
             pred_best_iou = (pred_best_iou > self.ignore_thre)
