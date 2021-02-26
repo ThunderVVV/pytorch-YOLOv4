@@ -289,12 +289,15 @@ def collate(batch):
 
 
 def train(model, device, config, epochs=5, batch_size=1, save_cp=True, log_step=20, img_scale=0.5):
+    # 创建dataset
     train_dataset = Yolo_dataset(config.train_label, config, train=True)
     val_dataset = Yolo_dataset(config.val_label, config, train=False)
 
+    # 获得dataset的长度
     n_train = len(train_dataset)
     n_val = len(val_dataset)
 
+    # 创建dataloader
     train_loader = DataLoader(train_dataset, batch_size=config.batch // config.subdivisions, shuffle=True,
                               num_workers=8, pin_memory=True, drop_last=True, collate_fn=collate)
 
@@ -307,9 +310,14 @@ def train(model, device, config, epochs=5, batch_size=1, save_cp=True, log_step=
     # writer.add_images('legend',
     #                   torch.from_numpy(train_dataset.label2colorlegend2(cfg.DATA_CLASSES).transpose([2, 0, 1])).to(
     #                       device).unsqueeze(0))
+    
+    # 计算迭代次数的最大值
     max_itr = config.TRAIN_EPOCHS * n_train
     # global_step = cfg.TRAIN_MINEPOCH * n_train
+    
+    # 迭代次数的全局计数器
     global_step = 0
+
     logging.info(f'''Starting training:
         Epochs:          {epochs}
         Batch size:      {config.batch}
@@ -327,23 +335,26 @@ def train(model, device, config, epochs=5, batch_size=1, save_cp=True, log_step=
     ''')
 
     # learning rate setup
+    # 自定义的学习率调整函数，先递增，然后阶梯性降低
     def burnin_schedule(i):
-        if i < config.burn_in:
+        # i表示iter，而不是epoch
+        if i < config.burn_in:  # 按4次方递增阶段
+            # factor表示乘在学习率上的倍数
             factor = pow(i / config.burn_in, 4)
-        elif i < config.steps[0]:
+        elif i < config.steps[0]:  # 第一阶段
             factor = 1.0
-        elif i < config.steps[1]:
+        elif i < config.steps[1]:  # 第二阶段
             factor = 0.1
-        else:
+        else:  # 第三阶段
             factor = 0.01
         return factor
 
-    if config.TRAIN_OPTIMIZER.lower() == 'adam':
+    if config.TRAIN_OPTIMIZER.lower() == 'adam':  # 默认是adam
         optimizer = optim.Adam(
             model.parameters(),
-            lr=config.learning_rate / config.batch,
-            betas=(0.9, 0.999),
-            eps=1e-08,
+            lr=config.learning_rate / config.batch,  # 学习率的实际值是设置值/batch_size
+            betas=(0.9, 0.999),  # adam的特殊参数，一般用默认即可
+            eps=1e-08,  # adam的特殊参数，一般用默认即可
         )
     elif config.TRAIN_OPTIMIZER.lower() == 'sgd':
         optimizer = optim.SGD(
@@ -352,8 +363,11 @@ def train(model, device, config, epochs=5, batch_size=1, save_cp=True, log_step=
             momentum=config.momentum,
             weight_decay=config.decay,
         )
+
+    # pytorch调整学习率的专用接口
     scheduler = optim.lr_scheduler.LambdaLR(optimizer, burnin_schedule)
 
+    # 计算loss的对象
     criterion = Yolo_loss(device=device, batch=config.batch // config.subdivisions, n_classes=config.classes)
     # scheduler = ReduceLROnPlateau(optimizer, mode='max', verbose=True, patience=6, min_lr=1e-7)
     # scheduler = CosineAnnealingWarmRestarts(optimizer, 0.001, 1e-6, 20)
@@ -387,8 +401,12 @@ def train(model, device, config, epochs=5, batch_size=1, save_cp=True, log_step=
                     optimizer.step()
                     scheduler.step()
                     model.zero_grad()
+                
+                logging.info("lr: " + str(scheduler.get_lr()[0]))
+                logging.info("loss: " + str(loss.item()))
 
                 if global_step % (log_step * config.subdivisions) == 0:
+                    
                     writer.add_scalar('train/Loss', loss.item(), global_step)
                     writer.add_scalar('train/loss_xy', loss_xy.item(), global_step)
                     writer.add_scalar('train/loss_wh', loss_wh.item(), global_step)
@@ -396,13 +414,13 @@ def train(model, device, config, epochs=5, batch_size=1, save_cp=True, log_step=
                     writer.add_scalar('train/loss_cls', loss_cls.item(), global_step)
                     writer.add_scalar('train/loss_l2', loss_l2.item(), global_step)
                     writer.add_scalar('lr', scheduler.get_lr()[0] * config.batch, global_step)
-                    pbar.set_postfix(**{'loss (batch)': loss.item(), 'loss_xy': loss_xy.item(),
-                                        'loss_wh': loss_wh.item(),
-                                        'loss_obj': loss_obj.item(),
-                                        'loss_cls': loss_cls.item(),
-                                        'loss_l2': loss_l2.item(),
-                                        'lr': scheduler.get_lr()[0] * config.batch
-                                        })
+                    # pbar.set_postfix(**{'loss (batch)': loss.item(), 'loss_xy': loss_xy.item(),
+                    #                     'loss_wh': loss_wh.item(),
+                    #                     'loss_obj': loss_obj.item(),
+                    #                     'loss_cls': loss_cls.item(),
+                    #                     'loss_l2': loss_l2.item(),
+                    #                     'lr': scheduler.get_lr()[0] * config.batch
+                    #                     })
                     logging.debug('Train step_{}: loss : {},loss xy : {},loss wh : {},'
                                   'loss obj : {}，loss cls : {},loss l2 : {},lr : {}'
                                   .format(global_step, loss.item(), loss_xy.item(),
@@ -412,32 +430,32 @@ def train(model, device, config, epochs=5, batch_size=1, save_cp=True, log_step=
 
                 pbar.update(images.shape[0])
 
-            if cfg.use_darknet_cfg:
-                eval_model = Darknet(cfg.cfgfile, inference=True)
-            else:
-                eval_model = Yolov4(cfg.pretrained, n_classes=cfg.classes, inference=True)
-            # eval_model = Yolov4(yolov4conv137weight=None, n_classes=config.classes, inference=True)
-            if torch.cuda.device_count() > 1:
-                eval_model.load_state_dict(model.module.state_dict())
-            else:
-                eval_model.load_state_dict(model.state_dict())
-            eval_model.to(device)
-            evaluator = evaluate(eval_model, val_loader, config, device)
-            del eval_model
-
-            stats = evaluator.coco_eval['bbox'].stats
-            writer.add_scalar('train/AP', stats[0], global_step)
-            writer.add_scalar('train/AP50', stats[1], global_step)
-            writer.add_scalar('train/AP75', stats[2], global_step)
-            writer.add_scalar('train/AP_small', stats[3], global_step)
-            writer.add_scalar('train/AP_medium', stats[4], global_step)
-            writer.add_scalar('train/AP_large', stats[5], global_step)
-            writer.add_scalar('train/AR1', stats[6], global_step)
-            writer.add_scalar('train/AR10', stats[7], global_step)
-            writer.add_scalar('train/AR100', stats[8], global_step)
-            writer.add_scalar('train/AR_small', stats[9], global_step)
-            writer.add_scalar('train/AR_medium', stats[10], global_step)
-            writer.add_scalar('train/AR_large', stats[11], global_step)
+            # if cfg.use_darknet_cfg:
+            #     eval_model = Darknet(cfg.cfgfile, inference=True)
+            # else:
+            #     eval_model = Yolov4(cfg.pretrained, n_classes=cfg.classes, inference=True)
+            # # eval_model = Yolov4(yolov4conv137weight=None, n_classes=config.classes, inference=True)
+#             if torch.cuda.device_count() > 1:
+#                 eval_model.load_state_dict(model.module.state_dict())
+#             else:
+#                 eval_model.load_state_dict(model.state_dict())
+#             eval_model.to(device)
+#             evaluator = evaluate(eval_model, val_loader, config, device)
+#             del eval_model
+# 
+#             stats = evaluator.coco_eval['bbox'].stats
+#             writer.add_scalar('train/AP', stats[0], global_step)
+#             writer.add_scalar('train/AP50', stats[1], global_step)
+#             writer.add_scalar('train/AP75', stats[2], global_step)
+#             writer.add_scalar('train/AP_small', stats[3], global_step)
+#             writer.add_scalar('train/AP_medium', stats[4], global_step)
+#             writer.add_scalar('train/AP_large', stats[5], global_step)
+#             writer.add_scalar('train/AR1', stats[6], global_step)
+#             writer.add_scalar('train/AR10', stats[7], global_step)
+#             writer.add_scalar('train/AR100', stats[8], global_step)
+#             writer.add_scalar('train/AR_small', stats[9], global_step)
+#             writer.add_scalar('train/AR_medium', stats[10], global_step)
+#             writer.add_scalar('train/AR_large', stats[11], global_step)
 
             if save_cp:
                 try:
@@ -568,6 +586,7 @@ def init_logger(log_file=None, log_dir=None, log_level=logging.INFO, mode='w', s
     log_dir: 日志文件的文件夹路径
     mode: 'a', append; 'w', 覆盖原文件写入.
     """
+    # 创建log目录和log文本文件
     def get_date_str():
         now = datetime.datetime.now()
         return now.strftime('%Y-%m-%d_%H-%M-%S')
@@ -583,6 +602,7 @@ def init_logger(log_file=None, log_dir=None, log_level=logging.INFO, mode='w', s
     # 此处不能使用logging输出
     print('log file path:' + log_file)
 
+    # logging是一个库，相当于高级版的print，这里是一些logging初始化工作
     logging.basicConfig(level=logging.DEBUG,
                         format=fmt,
                         filename=log_file,
@@ -605,25 +625,32 @@ def _get_date_str():
 
 if __name__ == "__main__":
     logging = init_logger(log_dir='log')
-    cfg = get_args(**Cfg)
+    cfg = get_args(**Cfg)  # Cfg来自cfg.py,这个函数可以用命令行参数去更新Cfg中的某几项
     os.environ["CUDA_VISIBLE_DEVICES"] = cfg.gpu
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     logging.info(f'Using device {device}')
 
-    if cfg.use_darknet_cfg:
+    if cfg.use_darknet_cfg:  # True
+        # 当use_darknet_cfg时，cfg.pretrained就没用了
+        logging.info("Using darknet cfg")
         model = Darknet(cfg.cfgfile)
     else:
+        # 当不是use_darknet_cfg时，cfg/yolov4.cfg等就没用了
+        logging.info("Not using darknet cfg")
         model = Yolov4(cfg.pretrained, n_classes=cfg.classes)
 
     if torch.cuda.device_count() > 1:
+        # 如果GPU数量大于1，将模型转为并行
         model = torch.nn.DataParallel(model)
     model.to(device=device)
 
     try:
         train(model=model,
               config=cfg,
-              epochs=cfg.TRAIN_EPOCHS,
-              device=device, )
+              epochs=cfg.TRAIN_EPOCHS,  # 300，在cfg.py中改
+              device=device, 
+              save_cp=False,
+              )
     except KeyboardInterrupt:
         torch.save(model.state_dict(), 'INTERRUPTED.pth')
         logging.info('Saved interrupt')

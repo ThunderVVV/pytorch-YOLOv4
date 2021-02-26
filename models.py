@@ -431,6 +431,8 @@ class Yolov4(nn.Module):
             # 2. overwrite entries in the existing state dict
             model_dict.update(pretrained_dict)
             _model.load_state_dict(model_dict)
+
+            print("yolov4conv137weight loaded")
         
         # head
         self.head = Yolov4Head(output_ch, n_classes, inference)

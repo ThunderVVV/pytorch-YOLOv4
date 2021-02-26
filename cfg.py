@@ -18,11 +18,11 @@ _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 Cfg = EasyDict()
 
-Cfg.use_darknet_cfg = True
-Cfg.cfgfile = os.path.join(_BASE_DIR, 'cfg', 'yolov4.cfg')
+Cfg.use_darknet_cfg = False
+Cfg.cfgfile = os.path.join(_BASE_DIR, 'cfg', 'yolov4-custom.cfg')
 
-Cfg.batch = 64
-Cfg.subdivisions = 16
+Cfg.batch = 4
+Cfg.subdivisions = 1
 Cfg.width = 608
 Cfg.height = 608
 Cfg.channels = 3
@@ -33,19 +33,19 @@ Cfg.saturation = 1.5
 Cfg.exposure = 1.5
 Cfg.hue = .1
 
-Cfg.learning_rate = 0.00261
-Cfg.burn_in = 1000
-Cfg.max_batches = 500500
-Cfg.steps = [400000, 450000]
-Cfg.policy = Cfg.steps
-Cfg.scales = .1, .1
+Cfg.learning_rate = 0.00261  # 可以被命令行的值覆盖，最终的学习率还要除以batch size
+Cfg.burn_in = 60  # 指学习率逐渐增长到设定值的分界点，iter而不是epoch
+Cfg.max_batches = 500500  # 没用到
+Cfg.steps = [1200, 1500]  # 指学习率阶梯更新分界点，iter而不是epoch
+Cfg.policy = Cfg.steps  # 没用到
+Cfg.scales = .1, .1  # 没用到
 
 Cfg.cutmix = 0
 Cfg.mosaic = 1
 
 Cfg.letter_box = 0
 Cfg.jitter = 0.2
-Cfg.classes = 80
+Cfg.classes = 80  # 可以被命令行的值覆盖
 Cfg.track = 0
 Cfg.w = Cfg.width
 Cfg.h = Cfg.height
@@ -56,7 +56,7 @@ Cfg.boxes = 60  # box num
 Cfg.TRAIN_EPOCHS = 300
 Cfg.train_label = os.path.join(_BASE_DIR, 'data', 'train.txt')
 Cfg.val_label = os.path.join(_BASE_DIR, 'data' ,'val.txt')
-Cfg.TRAIN_OPTIMIZER = 'adam'
+Cfg.TRAIN_OPTIMIZER = 'adam'  # 可以被命令行的值覆盖
 '''
 image_path1 x1,y1,x2,y2,id x1,y1,x2,y2,id x1,y1,x2,y2,id ...
 image_path2 x1,y1,x2,y2,id x1,y1,x2,y2,id x1,y1,x2,y2,id ...
@@ -73,6 +73,6 @@ elif Cfg.mosaic:
 Cfg.checkpoints = os.path.join(_BASE_DIR, 'checkpoints')
 Cfg.TRAIN_TENSORBOARD_DIR = os.path.join(_BASE_DIR, 'log')
 
-Cfg.iou_type = 'iou'  # 'giou', 'diou', 'ciou'
+Cfg.iou_type = 'iou'  # 'giou', 'diou', 'ciou'    # 可以被命令行的值覆盖
 
-Cfg.keep_checkpoint_max = 10
+Cfg.keep_checkpoint_max = 10    # 可以被命令行的值覆盖
