@@ -181,6 +181,9 @@ class Yolo_loss(nn.Module):  # 一个pytorch模块，计算loss，独立于主�
             self.anchor_h.append(anchor_h)
 
     def build_target(self, pred, labels, batchsize, fsize, n_ch, output_id):
+        # pred:(B, 3, fsize, fsize, 4) 最后一个维度的四个元素代表预测框的x,y,w,h 
+        # output_id表示输出序号，yolo共有3路张量输出
+
         # target assignment
         tgt_mask = torch.zeros(batchsize, self.n_anchors, fsize, fsize, 4 + self.n_classes).to(device=self.device)
         obj_mask = torch.ones(batchsize, self.n_anchors, fsize, fsize).to(device=self.device)
@@ -261,14 +264,28 @@ class Yolo_loss(nn.Module):  # 一个pytorch模块，计算loss，独立于主�
             # 交换维度变为（B， 3, fize, fize, n_classes + 5）
             output = output.permute(0, 1, 3, 4, 2)  # .contiguous()
 
+            # begin of 网络输出转化为预测框的坐标和长宽
+            
             # logistic activation for xy, obj, cls
+            # ...是一种切片的写法
+            # np.r_的用法：np.r_[:2,4:8]的结果是array([0, 1, 4, 5, 6, 7])
+            # 对tx,ty,confidence,cls过一个sigmoid激活函数，数值压到（0,1）
             output[..., np.r_[:2, 4:n_ch]] = torch.sigmoid(output[..., np.r_[:2, 4:n_ch]])
 
+            # 单独把tx,ty,tw,th拿出来，这里clone()是在原有的计算图中添加一个复制的运算，得到的结果有grad_fn
+            # 得到的pred结果形状为(B, 3, fsize, fsize, 4)，这里3的意思是每一路anchor的个数，yolov4里都是3
             pred = output[..., :4].clone()
+            # self.grid_x[output_id]的形状为(B, 3, fsize, fsize)，所以这里是相同形状的数组相加，没有广播
+            # self.grid_x[output_id]的第3个维度是0~fsize-1，对应横向W
             pred[..., 0] += self.grid_x[output_id]
+            # self.grid_y[output_id]的第2个维度是0~fsize-1，对应纵向H
             pred[..., 1] += self.grid_y[output_id]
+            # self.anchor_w[output_id]第1个维度有三种值，对应3种anchor的宽
             pred[..., 2] = torch.exp(pred[..., 2]) * self.anchor_w[output_id]
+            # self.anchor_h[output_id]第1个维度有三种值，对应3种anchor的高
             pred[..., 3] = torch.exp(pred[..., 3]) * self.anchor_h[output_id]
+
+            # end of 网络输出转化为预测框的坐标和长宽
 
             obj_mask, tgt_mask, tgt_scale, target = self.build_target(pred, labels, batchsize, fsize, n_ch, output_id)
 
