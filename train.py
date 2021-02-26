@@ -127,15 +127,16 @@ def bboxes_iou(bboxes_a, bboxes_b, xyxy=True, GIoU=False, DIoU=False, CIoU=False
     return iou
 
 
-class Yolo_loss(nn.Module):
+class Yolo_loss(nn.Module):  # 一个pytorch模块，计算loss，独立于主网络
     def __init__(self, n_classes=80, n_anchors=3, device=None, batch=2):
         super(Yolo_loss, self).__init__()
-        self.device = device
-        self.strides = [8, 16, 32]
-        image_size = 608
+        self.device = device  # "cuda"
+        self.strides = [8, 16, 32]  # 3种步长
+        image_size = 608  # 图片进入网络时的大小
         self.n_classes = n_classes
-        self.n_anchors = n_anchors
+        self.n_anchors = n_anchors  # 3
 
+        # 每个都对应一个anchor，先宽后长
         self.anchors = [[12, 16], [19, 36], [40, 28], [36, 75], [76, 55], [72, 146], [142, 110], [192, 243], [459, 401]]
         self.anch_masks = [[0, 1, 2], [3, 4, 5], [6, 7, 8]]
         self.ignore_thre = 0.5
@@ -143,20 +144,35 @@ class Yolo_loss(nn.Module):
         self.masked_anchors, self.ref_anchors, self.grid_x, self.grid_y, self.anchor_w, self.anchor_h = [], [], [], [], [], []
 
         for i in range(3):
-            all_anchors_grid = [(w / self.strides[i], h / self.strides[i]) for w, h in self.anchors]
+            # anchor的长和宽除以步长，得到的应该是输出维度上的对应长宽，注意得到的数据类型是浮点
+            all_anchors_grid = [(w / self.strides[i], h / self.strides[i]) for w, h in self.anchors]  
+            print(all_anchors_grid[0][0])
+            # 根据mask，选出对应组的anchors，masked_anchors的shape:(3, 2)
             masked_anchors = np.array([all_anchors_grid[j] for j in self.anch_masks[i]], dtype=np.float32)
+            # shape:(9, 4)
             ref_anchors = np.zeros((len(all_anchors_grid), 4), dtype=np.float32)
+            # 所有anchor的长和宽赋值到ref_anchors每行的后两个位置，shape:(9, 2)
             ref_anchors[:, 2:] = np.array(all_anchors_grid, dtype=np.float32)
+            # ref_anchors由ndarray转化为tensor
             ref_anchors = torch.from_numpy(ref_anchors)
             # calculate pred - xywh obj cls
-            fsize = image_size // self.strides[i]
+            # 608 // 步长（3种），得到3种输出图的大小fsize
+            fsize = image_size // self.strides[i]  
+            # 创建0~fsize-1的x索引，并扩展复制为（B, 3, fsize, fsize）
+            # 补充，tensor的repeat方法会在最后的维度上开始复制，要理解repeat的效果，最好自己亲自验证一下
+            # 补充，tensor的repeat方法相较于expand方法的区别在于，repeat()会开辟新的内存
             grid_x = torch.arange(fsize, dtype=torch.float).repeat(batch, 3, fsize, 1).to(device)
+            # 创建0~fsize-1的y索引，并扩展复制为（B, 3, fize, fsize），再交换维度变为（B, 3, fsize, fsize）
+            # 补充，tensor的permute方法用于维度换位
             grid_y = torch.arange(fsize, dtype=torch.float).repeat(batch, 3, fsize, 1).permute(0, 1, 3, 2).to(device)
+            # 对于3个anchor的宽度，扩展复制为（B, fsize, fsize, 3），再交换维度变为（B, 3, fsize, fize）
             anchor_w = torch.from_numpy(masked_anchors[:, 0]).repeat(batch, fsize, fsize, 1).permute(0, 3, 1, 2).to(
                 device)
+            # 对于3个anchor的高度，扩展复制为（B, fsize, fsize, 3），再交换维度变为（B, 3, fsize, fize）
             anchor_h = torch.from_numpy(masked_anchors[:, 1]).repeat(batch, fsize, fsize, 1).permute(0, 3, 1, 2).to(
                 device)
 
+            # 3组anchor的参数存放到list中，记录下来
             self.masked_anchors.append(masked_anchors)
             self.ref_anchors.append(ref_anchors)
             self.grid_x.append(grid_x)
@@ -233,13 +249,16 @@ class Yolo_loss(nn.Module):
         return obj_mask, tgt_mask, tgt_scale, target
 
     def forward(self, xin, labels=None):
+        # xin是yolov4网络3路输出的列表，每一路都是一个张量，形如（B, C, H, W），H和W相等即fsize
         loss, loss_xy, loss_wh, loss_obj, loss_cls, loss_l2 = 0, 0, 0, 0, 0, 0
-        for output_id, output in enumerate(xin):
-            batchsize = output.shape[0]
-            fsize = output.shape[2]
-            n_ch = 5 + self.n_classes
+        for output_id, output in enumerate(xin):  # 提取每一路输出
+            batchsize = output.shape[0]  # 第0维的大小为batchsize
+            fsize = output.shape[2]  # 第2维的大小为fsize
+            n_ch = 5 + self.n_classes  # 根据类别数计算通道数
 
+            # self.n_anchors为3，将输出形状调整为（B， 3， n_classes + 5, fize, fize）
             output = output.view(batchsize, self.n_anchors, n_ch, fsize, fsize)
+            # 交换维度变为（B， 3, fize, fize, n_classes + 5）
             output = output.permute(0, 1, 3, 4, 2)  # .contiguous()
 
             # logistic activation for xy, obj, cls
