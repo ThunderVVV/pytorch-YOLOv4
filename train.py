@@ -181,8 +181,11 @@ class Yolo_loss(nn.Module):  # 一个pytorch模块，计算loss，独立于主�
             self.anchor_h.append(anchor_h)
 
     def build_target(self, pred, labels, batchsize, fsize, n_ch, output_id):
+        """
+        创建target，核心是根据IOU选择出与标签对应的预测结果，把label的坐标转化为tx,ty,tw,th等
+        """
         # pred:(B, 3, fsize, fsize, 4) 最后一个维度的四个元素代表预测框的x,y,w,h 
-        # output_id表示输出序号，yolo共有3路张量输出
+        # output_id表示输出序号，yolo共有3路张量输出，这个函数是处理当前路
 
         # target assignment
         tgt_mask = torch.zeros(batchsize, self.n_anchors, fsize, fsize, 4 + self.n_classes).to(device=self.device)
@@ -227,7 +230,7 @@ class Yolo_loss(nn.Module):  # 一个pytorch模块，计算loss，独立于主�
 
             # temp = bbox_iou(truth_box.cpu(), self.ref_anchors[output_id])
 
-            # 找到IOU每行最大值，返回的best_n_all shape为(N,)
+            # 找到IOU每行最大值，返回的best_n_all shape为(N,)，每个元素的值的范围为0到8
             best_n_all = anchor_ious_all.argmax(dim=1)
             # 确定与该truth_box具有最大iou的是哪一组anchor
             best_n = best_n_all % 3
@@ -245,33 +248,43 @@ class Yolo_loss(nn.Module):  # 一个pytorch模块，计算loss，独立于主�
             truth_box[:n, 1] = truth_y_all[b, :n]
 
             # 网络预测的box和truth_box进行iou计算
-            # FIXME: 前面anchor和truth_box计算用的是CIoU=True，这里为什么改为了普通IOU
+            # FIXME: 前面anchor和truth_box计算用的是CIoU=True，这里为什么改为了普通IOU?
             pred_ious = bboxes_iou(pred[b].view(-1, 4), truth_box, xyxy=False)
+            # pred_iou shape:(3*fsize*fsize, N)，找到IOU每行的最大值，返回的pred_best_iou shape为(3*fsize*fsize,)
             pred_best_iou, _ = pred_ious.max(dim=1)
+            # 最大IOU小于ignore_thre（0.5)的预测框过滤掉，返回的是一个形状不变的逻辑张量，还是pred_best_iou shape为(3*fsize*fsize,)
             pred_best_iou = (pred_best_iou > self.ignore_thre)
+            # 将形状变换为(3,fsize,fsize)
             pred_best_iou = pred_best_iou.view(pred[b].shape[:3])
             # set mask to zero (ignore) if pred matches truth
+            # 设置预测框IOU小于阈值的obj mask为1，这些是作为计算obj loss的负例
             obj_mask[b] = ~ pred_best_iou
 
-            for ti in range(best_n.shape[0]):
-                if best_n_mask[ti] == 1:
-                    i, j = truth_i[ti], truth_j[ti]
-                    a = best_n[ti]
-                    obj_mask[b, a, j, i] = 1
-                    tgt_mask[b, a, j, i, :] = 1
+            for ti in range(best_n.shape[0]):  # 0~N-1，N为所有标签框的数量
+                if best_n_mask[ti] == 1:  # 如果当前anchor组负责该标签
+                    i, j = truth_i[ti], truth_j[ti]  # 得到当前标签框的中心坐标所在单元，在输出维度上
+                    a = best_n[ti]  # 0或1或2，得到组内对应的anchor序号，这其实就是通道序号
+                    obj_mask[b, a, j, i] = 1  # 对应位置的obj_mask设为1
+                    tgt_mask[b, a, j, i, :] = 1 # 对应位置的tgt_mask设为1
+                    # 将标签的x,y,w,h转化为target
+                    # 在特征维度上，x和y相当于只留下小数部分
                     target[b, a, j, i, 0] = truth_x_all[b, ti] - truth_x_all[b, ti].to(torch.int16).to(torch.float)
                     target[b, a, j, i, 1] = truth_y_all[b, ti] - truth_y_all[b, ti].to(torch.int16).to(torch.float)
+                    # w和h先除以对应anchor的尺寸，然后取对数
                     target[b, a, j, i, 2] = torch.log(
                         truth_w_all[b, ti] / torch.Tensor(self.masked_anchors[output_id])[best_n[ti], 0] + 1e-16)
                     target[b, a, j, i, 3] = torch.log(
                         truth_h_all[b, ti] / torch.Tensor(self.masked_anchors[output_id])[best_n[ti], 1] + 1e-16)
+                    # target的confidence设为1
                     target[b, a, j, i, 4] = 1
+                    # 类别部分只把对应类的位置设为1
                     target[b, a, j, i, 5 + labels[b, ti, 4].to(torch.int16).cpu().numpy()] = 1
+                    # FIXME:tgt_scale为(2-w*h/(fsize*fsize))再开方，这是干什么用的？
                     tgt_scale[b, a, j, i, :] = torch.sqrt(2 - truth_w_all[b, ti] * truth_h_all[b, ti] / fsize / fsize)
         return obj_mask, tgt_mask, tgt_scale, target
 
     def forward(self, xin, labels=None):
-        # xin是yolov4网络3路输出的列表，每一路都是一个张量，形如（B, C, H, W），H和W相等即fsize
+        # xin是yolov4网络3路输出组成的列表，每一路都是一个张量，形如（B, C, H, W），H和W相等即fsize
         loss, loss_xy, loss_wh, loss_obj, loss_cls, loss_l2 = 0, 0, 0, 0, 0, 0
         for output_id, output in enumerate(xin):  # 提取每一路输出
             batchsize = output.shape[0]  # 第0维的大小为batchsize
@@ -306,22 +319,52 @@ class Yolo_loss(nn.Module):  # 一个pytorch模块，计算loss，独立于主�
 
             # end of 网络输出转化为预测框的坐标和长宽
 
+            # 得到target，返回了预测框的筛选结果以及转化后的target值
             obj_mask, tgt_mask, tgt_scale, target = self.build_target(pred, labels, batchsize, fsize, n_ch, output_id)
 
             # loss calculation
+
+            # loss总体上分为两部分，obj loss, tgt loss，然后tgt loss又包含xy loss, wh loss, cls loss
+
+            # output shape:(B， 3, fize, fize, n_classes + 5)
+            # 推断出的confidence乘上一个obj_mask，作为obj的单元是乘1，不作为obj的单元变成0，后者部分相当于不参与obj loss计算（因为输出和目标全置零了）
+            # 哪些地方的obj_mask为1呢，首先是最大iou小于阈值的（负例），然后加上所在单元负责某个标签框的（正例），
+            # 对于前者，output是网络输出的confidence，target的confidence是0，
+            # 对于后者，output是网络输出的confidence，target的confidence是1
+            # 这样分析下来，这个obj_mask不仅包含正例，也包含负例
             output[..., 4] *= obj_mask
+            # [0, 1, 2, 3, 5, 6, 7]对应tx,ty,tw,th,cls... 乘上tgt_mask，作为tgt的单元是乘1，不作为tgt的单元变成0，后者部分相当于不参与tgt loss计算（因为输出和目标全置零了）
+            # 哪些地方的tgt_mask为1呢，只有所在单元负责某个标签框时为1
+            # 只有这些tgt_mask为1的地方会计算tgt部分的loss，包括x,y,w,h和cls loss
             output[..., np.r_[0:4, 5:n_ch]] *= tgt_mask
+            # [2, 3]对应tw,th 乘上tgt_scale
             output[..., 2:4] *= tgt_scale
 
+            # target进行相同的乘法操作
             target[..., 4] *= obj_mask
             target[..., np.r_[0:4, 5:n_ch]] *= tgt_mask
             target[..., 2:4] *= tgt_scale
 
+            # binary_cross_entropy计算公式：loss = -weight * ( target * torch.log(input) + (1 - target) * torch.log(1 - input) )
+            #                              loss = torch.sum(loss) / torch.numel(loss)
+            # 当target为1时，input越靠近1，loss越小；当target为0时，input越远离1，loss越小
+            # log函数当自变量为(0,1)时，因变量的结果是(0,无穷)，-log(0.5)=1
+
+            # x和y的loss，输入input和target形状为(B, 3, fsize, fsize, 2)，有效项个数：num_truth_boxes
+            # tgt_scale*tgt_scale 的值是(2-w*h/(fsize*fsize))
+            # target[..., :2]也是小数
             loss_xy += F.binary_cross_entropy(input=output[..., :2], target=target[..., :2],
                                               weight=tgt_scale * tgt_scale, reduction='sum')
+            # w和h的loss，输入input和target的形状为(B, 3, fsize, fsize, 2)，有效项个数：num_truth_boxes
+            # tw和th求的是mse loss，即L2 loss，因为tw和th可能是负的
+            # 它们在求loss之前乘了一个系数tgt_scale，相当于总的loss也乘了一个tgt_scale * tgt_scale=(2-w*h/(fsize*fsize))
             loss_wh += F.mse_loss(input=output[..., 2:4], target=target[..., 2:4], reduction='sum') / 2
+            # confidence的loss，输入input和target的形状为(B, 3, fsize, fsize,)，有效项个数约为 fsize*fsize/2
             loss_obj += F.binary_cross_entropy(input=output[..., 4], target=target[..., 4], reduction='sum')
+            # cls的loss，输入input和target的形状为(B, 3, fsize, fsize, num_classes)，有效项个数：num_truth_boxes
             loss_cls += F.binary_cross_entropy(input=output[..., 5:], target=target[..., 5:], reduction='sum')
+            # mse loss也称L2 loss，每个位置的元素各自相减，然后全部求平方和
+            # 注意这个loss不计入总的loss
             loss_l2 += F.mse_loss(input=output, target=target, reduction='sum')
 
         loss = loss_xy + loss_wh + loss_obj + loss_cls
@@ -422,7 +465,7 @@ def train(model, device, config, epochs=5, batch_size=1, save_cp=True, log_step=
     # pytorch调整学习率的专用接口
     scheduler = optim.lr_scheduler.LambdaLR(optimizer, burnin_schedule)
 
-    # 计算loss的对象
+    # 计算loss的对象，这个模块是在yolo网络后专门求解loss的（yolo主网络只负责接收图片，然后输出三路张量）
     criterion = Yolo_loss(device=device, batch=config.batch // config.subdivisions, n_classes=config.classes)
     # scheduler = ReduceLROnPlateau(optimizer, mode='max', verbose=True, patience=6, min_lr=1e-7)
     # scheduler = CosineAnnealingWarmRestarts(optimizer, 0.001, 1e-6, 20)

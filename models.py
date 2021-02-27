@@ -452,11 +452,23 @@ class Yolov4(nn.Module):
 
 
 if __name__ == "__main__":
+    
+    import os
+    os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+    os.environ["CUDA_VISIBLE_DEVICES"] = "4, 5"
+
     import sys
     import cv2
 
     namesfile = None
-    if len(sys.argv) == 6:
+    if len(sys.argv) == 5:
+        n_classes = int(sys.argv[1])
+        weightfile = sys.argv[2]
+        imgfile = sys.argv[3]
+        namesfile = sys.argv[4]
+        height = 608
+        width = 608
+    elif len(sys.argv) == 6:
         n_classes = int(sys.argv[1])
         weightfile = sys.argv[2]
         imgfile = sys.argv[3]
@@ -474,6 +486,7 @@ if __name__ == "__main__":
         print('  python models.py num_classes weightfile imgfile namefile')
 
     model = Yolov4(yolov4conv137weight=None, n_classes=n_classes, inference=True)
+    model = torch.nn.DataParallel(model)
 
     pretrained_dict = torch.load(weightfile, map_location=torch.device('cuda'))
     model.load_state_dict(pretrained_dict)
