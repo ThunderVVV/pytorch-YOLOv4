@@ -229,6 +229,8 @@ def image_data_augmentation(mat, w, h, pleft, ptop, swidth, sheight, flip, dhue,
             gaussian_noise = max(gaussian_noise, 0)
             cv2.randn(noise, 0, gaussian_noise)  # mean and variance
             sized = sized + noise
+    except KeyboardInterrupt:
+        pass
     except:
         print("OpenCV can't augment image: " + str(w) + " x " + str(h))
         sized = mat

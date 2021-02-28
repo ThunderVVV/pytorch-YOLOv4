@@ -485,11 +485,24 @@ if __name__ == "__main__":
         print('Usage: ')
         print('  python models.py num_classes weightfile imgfile namefile')
 
-    model = Yolov4(yolov4conv137weight=None, n_classes=n_classes, inference=True)
-    model = torch.nn.DataParallel(model)
+    from cfg import Cfg
+    from tool.darknet2pytorch import Darknet
+    if Cfg.use_darknet_cfg:
+        model = Darknet(Cfg.cfgfile)
 
-    pretrained_dict = torch.load(weightfile, map_location=torch.device('cuda'))
-    model.load_state_dict(pretrained_dict)
+        model = torch.nn.DataParallel(model)
+        pretrained_dict = torch.load(weightfile, map_location=torch.device('cuda'))
+        model.load_state_dict(pretrained_dict)
+        model.module.save_weights("WEIGHTS")
+
+        # model.load_weights("WEIGHTS")
+        # model = torch.nn.DataParallel(model)
+    else:
+        model = Yolov4(yolov4conv137weight=None, n_classes=n_classes, inference=True)
+        model = torch.nn.DataParallel(model)
+
+        pretrained_dict = torch.load(weightfile, map_location=torch.device('cuda'))
+        model.load_state_dict(pretrained_dict)
 
     use_cuda = True
     if use_cuda:
