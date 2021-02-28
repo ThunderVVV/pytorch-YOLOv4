@@ -151,7 +151,7 @@ class Darknet(nn.Module):
             self.anchor_step = self.loss.anchor_step
             self.num_classes = self.loss.num_classes
 
-        self.header = torch.IntTensor([0, 0, 0, 0])
+        self.header = torch.IntTensor([0, 0, 0, 0, 0])
         self.seen = 0
 
     def forward(self, x):
@@ -253,6 +253,7 @@ class Darknet(nn.Module):
         prev_stride = 1
         out_strides = []
         conv_id = 0
+
         for block in blocks:
             if block['type'] == 'net':  # 只有一个net
                 prev_filters = int(block['channels'])  # 3
@@ -502,3 +503,56 @@ class Darknet(nn.Module):
                 pass
             else:
                 print('unknown type %s' % (block['type']))
+        import sys
+        print("{}[line:{}] {} loaded ".format(os.path.basename(__file__), sys._getframe().f_lineno, weightfile))
+
+    def save_weights(self, outfile, cutoff=0):
+        if cutoff <= 0:
+            cutoff = len(self.blocks) - 1
+    
+        fp = open(outfile, 'wb')
+        self.header[3] = self.seen
+        header = self.header
+        header.numpy().tofile(fp)
+    
+        ind = -2
+        for block in self.blocks:
+            ind = ind + 1
+            if block['type'] == 'net':
+                pass
+            elif block['type'] == 'convolutional':
+                model = self.models[ind]
+                batch_normalize = int(block['batch_normalize'])
+                if batch_normalize:
+                    save_conv_bn(fp, model[0], model[1])
+                else:
+                    save_conv(fp, model[0])
+            elif block['type'] == 'connected':
+                model = self.models[ind]
+                if block['activation'] != 'linear':
+                    save_fc(fc, model)
+                else:
+                    save_fc(fc, model[0])
+            elif block['type'] == 'maxpool':
+                pass
+            elif block['type'] == 'reorg':
+                pass
+            elif block['type'] == 'upsample':
+                pass
+            elif block['type'] == 'route':
+                pass
+            elif block['type'] == 'shortcut':
+                pass
+            elif block['type'] == 'region':
+                pass
+            elif block['type'] == 'yolo':
+                pass
+            elif block['type'] == 'avgpool':
+                pass
+            elif block['type'] == 'softmax':
+                pass
+            elif block['type'] == 'cost':
+                pass
+            else:
+                print('unknown type %s' % (block['type']))
+        fp.close()

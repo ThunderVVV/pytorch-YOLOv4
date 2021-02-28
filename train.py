@@ -468,7 +468,7 @@ def train(model, device, config, epochs=5, batch_size=1, save_cp=True, log_step=
     # pytorch调整学习率的专用接口
     scheduler = optim.lr_scheduler.LambdaLR(optimizer, burnin_schedule)
 
-    # 计算loss的对象，这个模块是在yolo网络后专门求解loss的（yolo主网络只负责接收图片，然后输出三路张量）
+    # 计算loss的对象，这个模块是在yolo网络后专门求解loss的（yolo主网络只负责接收图片，然后输出三路张量），这个模块不需要权重等参数
     criterion = Yolo_loss(device=device, batch=config.batch // config.subdivisions, n_classes=config.classes)
     # scheduler = ReduceLROnPlateau(optimizer, mode='max', verbose=True, patience=6, min_lr=1e-7)
     # scheduler = CosineAnnealingWarmRestarts(optimizer, 0.001, 1e-6, 20)
@@ -658,7 +658,8 @@ def get_args(**kwargs):
                         help='GPU', dest='gpu')
     parser.add_argument('-dir', '--data-dir', type=str, default=None,
                         help='dataset dir', dest='dataset_dir')
-    parser.add_argument('-pretrained', type=str, default=None, help='pretrained yolov4.conv.137')
+    parser.add_argument('-pretrained', type=str, default=None, help='pretrained yolov4.conv.137.pth')
+    parser.add_argument('-pretrainedWeight', type=str, default=None, help='pretrained yolov4.conv.137')
     parser.add_argument('-classes', type=int, default=80, help='dataset classes')
     parser.add_argument('-train_label_path', dest='train_label', type=str, default='train.txt', help="train label path")
     parser.add_argument(
@@ -725,19 +726,41 @@ def _get_date_str():
 
 
 if __name__ == "__main__":
+    # 初始化logger，用于记录训练过程
     logging = init_logger(log_dir='log')
-    cfg = get_args(**Cfg)  # Cfg来自cfg.py,这个函数可以用命令行参数去更新Cfg中的某几项
+
+    # 超参设置总结：当cfg.py中的cfg.use_darknet_cfg为1时，超参来自三部分：
+    # 命令行、cfg.py和cfg/yolov4-custom.cfg，
+    # 其中cfg.py是控制训练和验证的超参（例如batchsize等)，某些参数可以被命令行覆盖（详见cfg.py里的注释）
+    # 而cfg/yolov4-custom.cfg中有用的只是网络结构本身的超参设置（例如每一层的卷积核大小等）
+
+    # 当cfg.py中的cfg.use_darknet_cfg为0时，超参来自命令行和cfg.py，此时网络结构直接Yolov4使用这个模块
+    # 之所以这样，是为了兼容darknet中形如cfg/yolov4-custom.cfg的网络设置
+
+    # Cfg来自cfg.py,这个函数可以用命令行参数去更新Cfg中的某几项
+    cfg = get_args(**Cfg)  
+
+    # 设置GPU用哪几个，cfg.gpu这个参数来自命令行
     os.environ["CUDA_VISIBLE_DEVICES"] = cfg.gpu
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     logging.info(f'Using device {device}')
 
-    if cfg.use_darknet_cfg:  # True
+    if cfg.use_darknet_cfg:
         # 当use_darknet_cfg时，cfg.pretrained就没用了
         logging.info("Using darknet cfg")
         model = Darknet(cfg.cfgfile)
+        if cfg.pretrained is not None and cfg.pretrainedWeight is None:
+            raise ValueError("Darknet can't load Pytorch weights")
+        elif cfg.pretrainedWeight is None:
+            raise ValueError("Please specify pretrainedWeight file")
+        model.load_weights(cfg.pretrainedWeight)
     else:
         # 当不是use_darknet_cfg时，cfg/yolov4.cfg等就没用了
         logging.info("Not using darknet cfg")
+        if cfg.pretrainedWeight is not None and cfg.pretrained is None:
+            raise ValueError("Pytorch can't load Darknet weights")
+        elif cfg.pretrained is None:
+            raise ValueError("Please specify pretrained file")
         model = Yolov4(cfg.pretrained, n_classes=cfg.classes)
 
     if torch.cuda.device_count() > 1:
@@ -753,6 +776,7 @@ if __name__ == "__main__":
               save_cp=False,
               )
     except KeyboardInterrupt:
+        # 在训练过程中，捕捉ctrl+c中断，保存模型到INTERRUPTED.pth
         torch.save(model.state_dict(), 'INTERRUPTED.pth')
         logging.info('Saved interrupt')
         try:
