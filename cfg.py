@@ -40,8 +40,8 @@ Cfg.steps = [1200, 1500]  # 指学习率阶梯更新分界点，iter而不是epo
 Cfg.policy = Cfg.steps  # 没用到
 Cfg.scales = .1, .1  # 没用到
 
-Cfg.cutmix = 0
-Cfg.mosaic = 1
+Cfg.cutmix = 0  # cutmix是一种利用多图混合的数据增强算法
+Cfg.mosaic = 1  # mosaic是cutmix的升级版
 
 Cfg.letter_box = 0
 Cfg.jitter = 0.2
@@ -52,7 +52,7 @@ Cfg.h = Cfg.height
 Cfg.flip = 1
 Cfg.blur = 0
 Cfg.gaussian = 0
-Cfg.boxes = 60  # box num
+Cfg.boxes = 60  # 标注框最大数量
 Cfg.TRAIN_EPOCHS = 300
 Cfg.train_label = os.path.join(_BASE_DIR, 'data', 'train.txt')
 Cfg.val_label = os.path.join(_BASE_DIR, 'data' ,'val.txt')

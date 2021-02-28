@@ -373,6 +373,8 @@ class Yolo_loss(nn.Module):  # 一个pytorch模块，计算loss，独立于主�
 
 
 def collate(batch):
+    # type(batch): list
+    # len(batch): batch_size
     images = []
     bboxes = []
     for img, box in batch:
@@ -388,6 +390,7 @@ def collate(batch):
 
 def train(model, device, config, epochs=5, batch_size=1, save_cp=True, log_step=20, img_scale=0.5):
     # 创建dataset
+    # config.train_label为data/coins.txt标签文本的路径
     train_dataset = Yolo_dataset(config.train_label, config, train=True)
     val_dataset = Yolo_dataset(config.val_label, config, train=False)
 

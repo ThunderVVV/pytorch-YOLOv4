@@ -450,7 +450,8 @@ class Darknet(nn.Module):
         return models
 
     def load_weights(self, weightfile):
-        fp = open(weightfile, 'rb')
+        fp = open(weightfile, 'rb')  # r:读模式打开 b:二进制文件
+        # 按int32的方式，读取前5个数，这5个数包含了文件的一些版本等信息，没啥用
         header = np.fromfile(fp, count=5, dtype=np.int32)
         self.header = torch.from_numpy(header)
         self.seen = self.header[3]
@@ -463,21 +464,22 @@ class Darknet(nn.Module):
             if start >= buf.size:
                 break
             ind = ind + 1
-            if block['type'] == 'net':
+            if block['type'] == 'net':  # 第一层是net，无参数
                 continue
-            elif block['type'] == 'convolutional':
+            elif block['type'] == 'convolutional':  # 卷积层，yolov4.cfg里只有卷积层有参数
                 model = self.models[ind]
                 batch_normalize = int(block['batch_normalize'])
                 if batch_normalize:
                     start = load_conv_bn(buf, start, model[0], model[1])
                 else:
                     start = load_conv(buf, start, model[0])
-            elif block['type'] == 'connected':
+            elif block['type'] == 'connected':  # 表示全连接层，yolov4.cfg里没有connected
                 model = self.models[ind]
                 if block['activation'] != 'linear':
                     start = load_fc(buf, start, model[0])
                 else:
                     start = load_fc(buf, start, model)
+            # 其它层没有参数
             elif block['type'] == 'maxpool':
                 pass
             elif block['type'] == 'reorg':
@@ -500,53 +502,3 @@ class Darknet(nn.Module):
                 pass
             else:
                 print('unknown type %s' % (block['type']))
-
-    # def save_weights(self, outfile, cutoff=0):
-    #     if cutoff <= 0:
-    #         cutoff = len(self.blocks) - 1
-    #
-    #     fp = open(outfile, 'wb')
-    #     self.header[3] = self.seen
-    #     header = self.header
-    #     header.numpy().tofile(fp)
-    #
-    #     ind = -1
-    #     for blockId in range(1, cutoff + 1):
-    #         ind = ind + 1
-    #         block = self.blocks[blockId]
-    #         if block['type'] == 'convolutional':
-    #             model = self.models[ind]
-    #             batch_normalize = int(block['batch_normalize'])
-    #             if batch_normalize:
-    #                 save_conv_bn(fp, model[0], model[1])
-    #             else:
-    #                 save_conv(fp, model[0])
-    #         elif block['type'] == 'connected':
-    #             model = self.models[ind]
-    #             if block['activation'] != 'linear':
-    #                 save_fc(fc, model)
-    #             else:
-    #                 save_fc(fc, model[0])
-    #         elif block['type'] == 'maxpool':
-    #             pass
-    #         elif block['type'] == 'reorg':
-    #             pass
-    #         elif block['type'] == 'upsample':
-    #             pass
-    #         elif block['type'] == 'route':
-    #             pass
-    #         elif block['type'] == 'shortcut':
-    #             pass
-    #         elif block['type'] == 'region':
-    #             pass
-    #         elif block['type'] == 'yolo':
-    #             pass
-    #         elif block['type'] == 'avgpool':
-    #             pass
-    #         elif block['type'] == 'softmax':
-    #             pass
-    #         elif block['type'] == 'cost':
-    #             pass
-    #         else:
-    #             print('unknown type %s' % (block['type']))
-    #     fp.close()
