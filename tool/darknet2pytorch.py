@@ -502,3 +502,5 @@ class Darknet(nn.Module):
                 pass
             else:
                 print('unknown type %s' % (block['type']))
+        import sys
+        print("{}[line:{}] {} loaded ".format(__file__, sys._getframe().f_lineno, weightfile))

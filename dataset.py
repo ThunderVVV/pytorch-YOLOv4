@@ -328,20 +328,19 @@ class Yolo_dataset(Dataset):
         return len(self.truth.keys())
 
     def __getitem__(self, index):
-    """
-    根据索引，获得图片和标注框
+        """
+        根据索引，获得图片和标注框
 
-    Args:
-        index(int): 索引
-    Returns:
-        out_img(ndarray): 形状为(self.cfg.h, self.cfg.w, 3)
-            self.cfg.h and self.cfg.w 是网络输入的高和宽
-        out_bboxes1(ndarray): 形状为(self.cfg.boxes, 5)
-            self.cfg.boxes是设定的标注框最大数量
+        Args:
+            index(int): 索引
+        Returns:
+            out_img(ndarray): 形状为(self.cfg.h, self.cfg.w, 3)
+                self.cfg.h and self.cfg.w 是网络输入的高和宽
+            out_bboxes1(ndarray): 形状为(self.cfg.boxes, 5)
+                self.cfg.boxes是设定的标注框最大数量
 
-    """
+        """
         # getitem时间越长，从dataloader取数据的时间越长，这个时间位于每个iter开始部分
-
         if not self.train:
             # 因为把train和val的dataset类写到一起，但train和val预处理肯定是不同的，所以在内部分成两个函数
             return self._get_val_item(index)
