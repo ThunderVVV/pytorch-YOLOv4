@@ -6,6 +6,8 @@ from tool.yolo_layer import YoloLayer
 from tool.config import *
 from tool.torch_utils import *
 
+from usertool.userprint import debugPrint
+
 
 class Mish(torch.nn.Module):
     def __init__(self):
@@ -240,6 +242,7 @@ class Darknet(nn.Module):
         if self.training:
             return out_boxes
         else:
+            # 返回：[boxes, confs]
             return get_region_boxes(out_boxes)
 
     def print_network(self):
@@ -503,8 +506,7 @@ class Darknet(nn.Module):
                 pass
             else:
                 print('unknown type %s' % (block['type']))
-        import sys
-        print("{}[line:{}] {} loaded ".format(os.path.basename(__file__), sys._getframe().f_lineno, weightfile))
+        debugPrint("{} weights loaded".format(weightfile))
 
     def save_weights(self, outfile, cutoff=0):
         if cutoff <= 0:

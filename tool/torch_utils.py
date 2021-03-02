@@ -12,7 +12,6 @@ import imghdr  # get_image_size
 
 from tool import utils 
 
-
 def bbox_ious(boxes1, boxes2, x1y1x2y2=True):
     if x1y1x2y2:
         mx = torch.min(boxes1[0], boxes2[0])
@@ -46,6 +45,9 @@ def bbox_ious(boxes1, boxes2, x1y1x2y2=True):
 
 
 def get_region_boxes(boxes_and_confs):
+    # boxes_and_confs [[bboxes, confs],[boxes, confs],[boxes, confs]]
+    # boxes: [batch, num_anchors * H * W, 1, 4]
+    # confs: [batch, num_anchors * H * W, num_classes]
 
     # print('Getting boxes from boxes and confs ...')
 
@@ -58,6 +60,8 @@ def get_region_boxes(boxes_and_confs):
 
     # boxes: [batch, num1 + num2 + num3, 1, 4]
     # confs: [batch, num1 + num2 + num3, num_classes]
+    # 相当于三个尺度的结果拼接
+    # 得到的结果boxes shape(B, 9*H*W, 1, 4),confs shape(B, 9*H*W, num_classes)
     boxes = torch.cat(boxes_list, dim=1)
     confs = torch.cat(confs_list, dim=1)
         
@@ -74,7 +78,6 @@ def convert2cpu_long(gpu_matrix):
 
 
 def do_detect(model, img, conf_thresh, nms_thresh, use_cuda=1):
-    model.eval()
     t0 = time.time()
 
     if type(img) == np.ndarray and len(img.shape) == 3:  # cv2 image
@@ -87,7 +90,7 @@ def do_detect(model, img, conf_thresh, nms_thresh, use_cuda=1):
 
     if use_cuda:
         img = img.cuda()
-    img = torch.autograd.Variable(img)
+    # img = torch.autograd.Variable(img)
     
     t1 = time.time()
 
@@ -95,10 +98,10 @@ def do_detect(model, img, conf_thresh, nms_thresh, use_cuda=1):
 
     t2 = time.time()
 
-    print('-----------------------------------')
-    print('           Preprocess : %f' % (t1 - t0))
-    print('      Model Inference : %f' % (t2 - t1))
-    print('-----------------------------------')
+    # print('-----------------------------------')
+    # print('           Preprocess : %f' % (t1 - t0))
+    # print('      Model Inference : %f' % (t2 - t1))
+    # print('-----------------------------------')
 
     return utils.post_processing(img, conf_thresh, nms_thresh, output)
 

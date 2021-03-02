@@ -284,6 +284,8 @@ def yolo_forward_dynamic(output, conf_thresh, num_classes, anchors, num_anchors,
 
     # boxes: [batch, num_anchors * H * W, 1, 4]
     # confs: [batch, num_anchors * H * W, num_classes]
+    # print(boxes.size())
+    # print(confs.size())
 
     return  boxes, confs
 

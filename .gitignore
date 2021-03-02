@@ -18,3 +18,4 @@ log
 *.jpg
 *.json
 data/outcome
+/tmp/

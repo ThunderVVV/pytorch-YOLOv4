@@ -15,10 +15,17 @@ import random
 import sys
 
 import cv2
+
+# Disable OpenCV multithreading to fix the bug of stuck when num_works>0 in pytorch dataloader
+# This maybe the reason why pytorch recommends PIL to load images 
+cv2.setNumThreads(0)
+
 import numpy as np
 
 import torch
 from torch.utils.data.dataset import Dataset
+
+from usertool.userprint import debugPrint
 
 
 def rand_uniform_strong(min, max):
@@ -480,6 +487,11 @@ class Yolo_dataset(Dataset):
         # out_bboxes1的形状固定为(cfg.boxes,5)，不够的补零
         out_bboxes1 = np.zeros([self.cfg.boxes, 5])
         out_bboxes1[:min(out_bboxes.shape[0], self.cfg.boxes)] = out_bboxes[:min(out_bboxes.shape[0], self.cfg.boxes)]
+        
+        out_img = out_img.transpose(2, 0, 1)
+        out_img = torch.from_numpy(out_img).div(255.0)
+        out_bboxes1 = torch.from_numpy(out_bboxes1)
+        
         return out_img, out_bboxes1
 
     def _get_val_item(self, index):
@@ -488,25 +500,25 @@ class Yolo_dataset(Dataset):
         img_path = self.imgs[index]
         bboxes_with_cls_id = np.array(self.truth.get(img_path), dtype=np.float)
         img = cv2.imread(os.path.join(self.cfg.dataset_dir, img_path))
-        # img_height, img_width = img.shape[:2]
         img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        # img = cv2.resize(img, (self.cfg.w, self.cfg.h))
-        # img = torch.from_numpy(img.transpose(2, 0, 1)).float().div(255.0).unsqueeze(0)
         num_objs = len(bboxes_with_cls_id)
         target = {}
         # boxes to coco format
         boxes = bboxes_with_cls_id[...,:4]
-        boxes[..., 2:] = boxes[..., 2:] - boxes[..., :2]  # box width, box height
+        # boxes[..., 2:] = boxes[..., 2:] - boxes[..., :2]  # x1, y1, x2, y2 -> x, y, w, h
         target['boxes'] = torch.as_tensor(boxes, dtype=torch.float32)
         target['labels'] = torch.as_tensor(bboxes_with_cls_id[...,-1].flatten(), dtype=torch.int64)
         target['image_id'] = torch.tensor([get_image_id(img_path)])
-        target['area'] = (target['boxes'][:,3])*(target['boxes'][:,2])
+        target['area'] = (target['boxes'][:,3] - target['boxes'][:,1])*(target['boxes'][:,2] - target['boxes'][:,0])
         target['iscrowd'] = torch.zeros((num_objs,), dtype=torch.int64)
+        # img shape (H, W, 3)
+        # target 字典
         return img, target
 
 
 def get_image_id(filename:str) -> int:
     """
+    根据图片文件名，创建唯一的整数标识
     Convert a string to a integer.
     Make sure that the images and the `image_id`s are in one-one correspondence.
     There are already `image_id`s in annotations of the COCO dataset,
@@ -519,9 +531,8 @@ def get_image_id(filename:str) -> int:
     >>> no = f"{int(no):04d}"
     >>> return int(lv+no)
     """
-#     raise NotImplementedError("Create your own 'get_image_id' function")
+    # raise NotImplementedError("Create your own 'get_image_id' function")
     lv, no = os.path.splitext(os.path.basename(filename))[0].split("-")
-    print(lv + " " + no)
     return int(lv[1:] + no)
 
 

@@ -11,11 +11,13 @@
 
 '''
 import time
+import json
 import logging
 import os, sys, math
 import argparse
 from collections import deque
 import datetime
+import traceback
 
 import cv2
 from tqdm import tqdm
@@ -32,10 +34,11 @@ from dataset import Yolo_dataset
 from cfg import Cfg
 from models import Yolov4
 from tool.darknet2pytorch import Darknet
+from dataset import get_image_id
+from tool.torch_utils import do_detect
 
-from tool.tv_reference.utils import collate_fn as val_collate
-from tool.tv_reference.coco_utils import convert_to_coco_api
-from tool.tv_reference.coco_eval import CocoEvaluator
+from usertool.userprint import debugPrint
+from usertool.usercoco import cocoEvaluate
 
 
 def bboxes_iou(bboxes_a, bboxes_b, xyxy=True, GIoU=False, DIoU=False, CIoU=False):
@@ -146,7 +149,6 @@ class Yolo_loss(nn.Module):  # 一个pytorch模块，计算loss，独立于主�
         for i in range(3):
             # anchor的长和宽除以步长，得到的all_anchors_grid应该是输出维度上的对应长宽，注意得到的数据类型是浮点
             all_anchors_grid = [(w / self.strides[i], h / self.strides[i]) for w, h in self.anchors]  
-            print(all_anchors_grid[0][0])
             # 根据mask，选出对应组的anchors，masked_anchors的shape:(3, 2)
             masked_anchors = np.array([all_anchors_grid[j] for j in self.anch_masks[i]], dtype=np.float32)
             # shape:(9, 4)
@@ -193,7 +195,6 @@ class Yolo_loss(nn.Module):  # 一个pytorch模块，计算loss，独立于主�
         tgt_scale = torch.zeros(batchsize, self.n_anchors, fsize, fsize, 2).to(self.device)
         target = torch.zeros(batchsize, self.n_anchors, fsize, fsize, n_ch).to(self.device)
 
-        # labels = labels.cpu().data
         # labels shape: (B, N, 5)，得到的nlabel shape: (B,)
         nlabel = (labels.sum(dim=2) > 0).sum(dim=1)  # number of objects
 
@@ -227,8 +228,6 @@ class Yolo_loss(nn.Module):  # 一个pytorch模块，计算loss，独立于主�
             # 返回的anchor_ious_all shape:(N, 9)
             # 初看可能会问：这里xyxy不应该是False吗？ 画图看看就会发现，xyxy=True是左上角对齐，反之是中心对齐，都是正确的，但结果是否就完全相同可能取决于IOU是哪种
             anchor_ious_all = bboxes_iou(truth_box.cpu(), self.ref_anchors[output_id], CIoU=True)
-
-            # temp = bbox_iou(truth_box.cpu(), self.ref_anchors[output_id])
 
             # 找到IOU每行最大值，返回的best_n_all shape为(N,)，每个元素的值的范围为0到8
             best_n_all = anchor_ious_all.argmax(dim=1)
@@ -372,23 +371,155 @@ class Yolo_loss(nn.Module):  # 一个pytorch模块，计算loss，独立于主�
         return loss, loss_xy, loss_wh, loss_obj, loss_cls, loss_l2
 
 
-def collate(batch):
-    # type(batch): list
-    # len(batch): batch_size
-    images = []
-    bboxes = []
-    for img, box in batch:
-        images.append([img])
-        bboxes.append([box])
-    images = np.concatenate(images, axis=0)
-    images = images.transpose(0, 3, 1, 2)
-    images = torch.from_numpy(images).div(255.0)
-    bboxes = np.concatenate(bboxes, axis=0)
-    bboxes = torch.from_numpy(bboxes)
-    return images, bboxes
+# def train_collate(batch):
+#     # type(batch): list
+#     # len(batch): batch_size
+#     images = []
+#     bboxes = []
+#     for img, box in batch:
+#         images.append([img])
+#         bboxes.append([box])
+#     images = np.concatenate(images, axis=0)
+#     images = images.transpose(0, 3, 1, 2)
+#     images = torch.from_numpy(images).div(255.0)
+#     bboxes = np.concatenate(bboxes, axis=0)
+#     bboxes = torch.from_numpy(bboxes)
+#     return images, bboxes
+
+
+def val_collate(batch):
+    return tuple(zip(*batch))
+
+
+def makeTgtJson(val_loader, categories):
+    os.makedirs("./tmp", exist_ok=True)
+    json_dict = {"images":[], "type": "instances", "annotations": [],
+                 "categories": []}
+    bnd_id = 1
+    for cate, cid in categories.items():
+        cat = {'supercategory': 'none', 
+                'id': cid, 
+                'name': cate
+                }
+        json_dict['categories'].append(cat)
+    tgtFile = "./tmp/tgt.json"
+
+    for images, targets in val_loader:
+        for img, target in zip(images, targets):
+            # targets是一个列表，里面的每个成员是字典
+            # "boxes": tensor shape(N, 4) xmin, ymin, xmax, ymax
+            # "labels": tensor shape(N,)
+            # "image_id": tensor shape (1,)
+            # "area": tesor shape (N,) 表示框的面积
+            # "iscrowd": tensor shape(N,) 全零
+            image_id = int(target["image_id"][0])
+            height, width = img.shape[:2]
+            image = {'file_name': "0", 
+                    'height': height, 
+                    'width': width,
+                    'id':image_id
+                    }
+            json_dict['images'].append(image)
+
+            for i, box in enumerate(target["boxes"]):
+                # box shape (4,)  xmin,ymin,xmax,ymax
+                xmin = int(box[0])
+                ymin = int(box[1])
+                xmax = int(box[2])
+                ymax = int(box[3])
+                assert(xmax > xmin)
+                assert(ymax > ymin)
+                o_width = xmax - xmin
+                o_height = ymax - ymin
+                ann = {'area': o_width*o_height, 
+                    'iscrowd': 0, 
+                    'image_id': image_id,
+                    'bbox':[xmin, ymin, o_width, o_height],
+                    'category_id': int(target["labels"][i]),
+                    'id': bnd_id,
+                    'ignore': 0,
+                    'segmentation': []
+                    }
+                json_dict['annotations'].append(ann)
+                bnd_id += 1
+
+    with open(tgtFile, 'w') as json_fp:
+        # 将字典转化为json
+        json_str = json.dumps(json_dict)
+        json_fp.write(json_str)
+
+    return tgtFile
+
+
+def evaluate(model, val_label, val_dataset_dir, use_cuda, net_width, net_height):
+    os.makedirs("./tmp", exist_ok=True)
+    resFile = "./tmp/res.json"
+
+    f = open(val_label, 'r', encoding='utf-8')
+    truth = {}
+    for line in f.readlines():
+        data = line.split(" ")  # 以空格分开不同目标
+        truth[data[0]] = []  # data[0]是图片名称（xxx.jpg）
+        for i in data[1:]:
+            # 每一项是一个列表，[x1,y1,x2,y2,cls_id],列表中的元素全部为int类型
+            truth[data[0]].append([int(float(j)) for j in i.split(',')])
+    
+    imgs = list(truth.keys())  # 列表
+    # net_width = model.width
+    # net_height = model.height
+    # if use_cuda:
+    #     model.cuda()
+    # if torch.cuda.device_count() > 1:
+    #     model = torch.nn.DataParallel(model)
+    boxes_json = []
+    for i, image_file_name in enumerate(imgs):
+        image_id = get_image_id(image_file_name)
+        img = cv2.imread(os.path.join(val_dataset_dir, image_file_name))
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        image_height, image_width = img.shape[:-1]
+        sized = cv2.resize(img, (net_width, net_height), cv2.INTER_LINEAR)
+        start = time.time()
+        boxes = do_detect(model, sized, 0.0, 0.6, use_cuda)
+        finish = time.time()
+
+        assert type(boxes[0]) == list
+        for box in boxes[0]:
+            box_json = {}
+            # xmin,ymin,xmax,ymax -> xmin,ymin,w,h
+            box[2] = box[2] - box[0]
+            box[3] = box[3] - box[1]
+            category_id = box[-1]
+            score = box[-2]
+            bbox_normalized = box[:4]
+            box_json["category_id"] = int(category_id)
+            box_json["image_id"] = int(image_id)
+            bbox = []
+            for i, bbox_coord in enumerate(bbox_normalized):
+                modified_bbox_coord = float(bbox_coord)
+                if i % 2:
+                    modified_bbox_coord *= image_height
+                else:
+                    modified_bbox_coord *= image_width
+                modified_bbox_coord = round(modified_bbox_coord, 2)
+                bbox.append(modified_bbox_coord)
+            box_json["bbox_normalized"] = list(map(lambda x: round(float(x), 2), bbox_normalized))
+            box_json["bbox"] = bbox
+            box_json["score"] = round(float(score), 2)
+            box_json["timing"] = float(finish - start)
+            boxes_json.append(box_json)
+    if len(boxes_json) == 0:
+        return None
+    with open(resFile, 'w') as outfile:
+        json.dump(boxes_json, outfile)
+
+    return resFile   
 
 
 def train(model, device, config, epochs=5, batch_size=1, save_cp=True, log_step=20, img_scale=0.5):
+    # TODO:加上resume功能，resume需要什么信息？
+    # config的所有信息、yolov4-custom.cfg的所有信息，权重，epoch序号，学习率到哪了
+    
+    
     # 创建dataset
     # config.train_label为data/coins.txt标签文本的路径
     train_dataset = Yolo_dataset(config.train_label, config, train=True)
@@ -399,22 +530,29 @@ def train(model, device, config, epochs=5, batch_size=1, save_cp=True, log_step=
     n_val = len(val_dataset)
 
     # 创建dataloader
+    # 当pin_memory=False,num_workers=0（子进程数量为0，即只有主进程）时，正常
+    # 当pin_memory=True,num_workers=8时，卡住
+    # 当pin_memory=False,num_workers=8时，卡住
+    # 当pin_memory=True,num_workers=0时，正常
+    # 综上，原因在于num_workers大于0开启多线程导致
+    # 经查，dataset加载图片中使用OpenCV，OpenCV某些函数默认也会开多线程，
+    # 多线程套多线程，容易导致线程卡住（是否会卡住可能与不同操作系统有关）
+    # 解决方法：法一，在dataset的前面import cv2时加上cv2.setNumThreads(0)禁用OpenCV多进程（推荐）
+    #          法二，使用PIL加载和预处理图片（不推荐，PIL速度不如OpenCV）
     train_loader = DataLoader(train_dataset, batch_size=config.batch // config.subdivisions, shuffle=True,
-                              num_workers=8, pin_memory=True, drop_last=True, collate_fn=collate)
-
-    val_loader = DataLoader(val_dataset, batch_size=config.batch // config.subdivisions, shuffle=True, num_workers=8,
-                            pin_memory=True, drop_last=True, collate_fn=val_collate)
+                              num_workers=8, pin_memory=True, drop_last=True)
+    val_loader = DataLoader(val_dataset, batch_size=config.batch // config.subdivisions, shuffle=False,
+                              num_workers=8, pin_memory=True, drop_last=False, collate_fn=val_collate)
+                            
+    if config.only_evaluate or config.evaluate_when_train:
+        tgtFile = makeTgtJson(val_loader, config.categories)
 
     writer = SummaryWriter(log_dir=config.TRAIN_TENSORBOARD_DIR,
                            filename_suffix=f'OPT_{config.TRAIN_OPTIMIZER}_LR_{config.learning_rate}_BS_{config.batch}_Sub_{config.subdivisions}_Size_{config.width}',
                            comment=f'OPT_{config.TRAIN_OPTIMIZER}_LR_{config.learning_rate}_BS_{config.batch}_Sub_{config.subdivisions}_Size_{config.width}')
-    # writer.add_images('legend',
-    #                   torch.from_numpy(train_dataset.label2colorlegend2(cfg.DATA_CLASSES).transpose([2, 0, 1])).to(
-    #                       device).unsqueeze(0))
     
     # 计算迭代次数的最大值
     max_itr = config.TRAIN_EPOCHS * n_train
-    # global_step = cfg.TRAIN_MINEPOCH * n_train
     
     # 迭代次数的全局计数器
     global_step = 0
@@ -432,8 +570,25 @@ def train(model, device, config, epochs=5, batch_size=1, save_cp=True, log_step=
         Optimizer:       {config.TRAIN_OPTIMIZER}
         Dataset classes: {config.classes}
         Train label path:{config.train_label}
-        Pretrained:
+        Pretrained:      {config.pretrainedWeight is not None or config.Pretrained is not None}
     ''')
+    if config.only_evaluate:
+        if config.use_darknet_cfg:
+            eval_model = Darknet(config.cfgfile)
+        else:
+            raise NotImplementedError
+        if torch.cuda.device_count() > 1:
+            eval_model.load_state_dict(model.module.state_dict())
+        else:
+            eval_model.load_state_dict(model.state_dict())
+        eval_model.to(device)
+        eval_model.eval()
+        resFile = evaluate(eval_model, config.val_label, config.dataset_dir, device==torch.device("cuda"))
+        if resFile is None:
+            debugPrint("detect 0 boxes in the val set")
+            return
+        cocoEvaluate(tgtFile, resFile)
+        return
 
     # learning rate setup
     # 自定义的学习率调整函数，先递增，然后阶梯性降低
@@ -470,214 +625,125 @@ def train(model, device, config, epochs=5, batch_size=1, save_cp=True, log_step=
 
     # 计算loss的对象，这个模块是在yolo网络后专门求解loss的（yolo主网络只负责接收图片，然后输出三路张量），这个模块不需要权重等参数
     criterion = Yolo_loss(device=device, batch=config.batch // config.subdivisions, n_classes=config.classes)
-    # scheduler = ReduceLROnPlateau(optimizer, mode='max', verbose=True, patience=6, min_lr=1e-7)
-    # scheduler = CosineAnnealingWarmRestarts(optimizer, 0.001, 1e-6, 20)
 
     save_prefix = 'Yolov4_epoch'
     saved_models = deque()
-    model.train()
     for epoch in range(epochs):
-        # model.train()
         epoch_loss = 0
         epoch_step = 0
+        model.train()
+        logging.info("===Train===")
+        for i, batch in enumerate(train_loader):
+            global_step += 1
+            epoch_step += 1
+            images = batch[0]
+            bboxes = batch[1]
 
-        with tqdm(total=n_train, desc=f'Epoch {epoch + 1}/{epochs}', unit='img', ncols=50) as pbar:
-            for i, batch in enumerate(train_loader):
-                global_step += 1
-                epoch_step += 1
-                images = batch[0]
-                bboxes = batch[1]
+            images = images.to(device=device, dtype=torch.float32)
+            bboxes = bboxes.to(device=device)
 
-                images = images.to(device=device, dtype=torch.float32)
-                bboxes = bboxes.to(device=device)
+            bboxes_pred = model(images)
+            loss, loss_xy, loss_wh, loss_obj, loss_cls, loss_l2 = criterion(bboxes_pred, bboxes)
+            loss.backward()
 
-                bboxes_pred = model(images)
-                loss, loss_xy, loss_wh, loss_obj, loss_cls, loss_l2 = criterion(bboxes_pred, bboxes)
-                # loss = loss / config.subdivisions
-                loss.backward()
+            epoch_loss += loss.item()
 
-                epoch_loss += loss.item()
+            if global_step % config.subdivisions == 0:
+                optimizer.step()
+                scheduler.step()
+                model.zero_grad()
+            
+            logging.info("Epoch:[{:3}/{}],step:[{:3}/{}],total loss:{:.2f}|lr:{:.5f}".format(epoch + 1, epochs, i + 1, len(train_loader), loss.item(), scheduler.get_last_lr()[0]))
 
-                if global_step % config.subdivisions == 0:
-                    optimizer.step()
-                    scheduler.step()
-                    model.zero_grad()
+            if global_step % (log_step * config.subdivisions) == 0:  # log_step默认为20，这里指的是迭代次数
                 
-                logging.info("lr: " + str(scheduler.get_lr()[0]))
-                logging.info("loss: " + str(loss.item()))
-
-                if global_step % (log_step * config.subdivisions) == 0:
-                    
-                    writer.add_scalar('train/Loss', loss.item(), global_step)
-                    writer.add_scalar('train/loss_xy', loss_xy.item(), global_step)
-                    writer.add_scalar('train/loss_wh', loss_wh.item(), global_step)
-                    writer.add_scalar('train/loss_obj', loss_obj.item(), global_step)
-                    writer.add_scalar('train/loss_cls', loss_cls.item(), global_step)
-                    writer.add_scalar('train/loss_l2', loss_l2.item(), global_step)
-                    writer.add_scalar('lr', scheduler.get_lr()[0] * config.batch, global_step)
-                    # pbar.set_postfix(**{'loss (batch)': loss.item(), 'loss_xy': loss_xy.item(),
-                    #                     'loss_wh': loss_wh.item(),
-                    #                     'loss_obj': loss_obj.item(),
-                    #                     'loss_cls': loss_cls.item(),
-                    #                     'loss_l2': loss_l2.item(),
-                    #                     'lr': scheduler.get_lr()[0] * config.batch
-                    #                     })
-                    logging.debug('Train step_{}: loss : {},loss xy : {},loss wh : {},'
-                                  'loss obj : {}，loss cls : {},loss l2 : {},lr : {}'
-                                  .format(global_step, loss.item(), loss_xy.item(),
-                                          loss_wh.item(), loss_obj.item(),
-                                          loss_cls.item(), loss_l2.item(),
-                                          scheduler.get_lr()[0] * config.batch))
-
-                pbar.update(images.shape[0])
-
-            # if cfg.use_darknet_cfg:
-            #     eval_model = Darknet(cfg.cfgfile, inference=True)
-            # else:
-            #     eval_model = Yolov4(cfg.pretrained, n_classes=cfg.classes, inference=True)
-            # # eval_model = Yolov4(yolov4conv137weight=None, n_classes=config.classes, inference=True)
-#             if torch.cuda.device_count() > 1:
-#                 eval_model.load_state_dict(model.module.state_dict())
-#             else:
-#                 eval_model.load_state_dict(model.state_dict())
-#             eval_model.to(device)
-#             evaluator = evaluate(eval_model, val_loader, config, device)
-#             del eval_model
-# 
-#             stats = evaluator.coco_eval['bbox'].stats
-#             writer.add_scalar('train/AP', stats[0], global_step)
-#             writer.add_scalar('train/AP50', stats[1], global_step)
-#             writer.add_scalar('train/AP75', stats[2], global_step)
-#             writer.add_scalar('train/AP_small', stats[3], global_step)
-#             writer.add_scalar('train/AP_medium', stats[4], global_step)
-#             writer.add_scalar('train/AP_large', stats[5], global_step)
-#             writer.add_scalar('train/AR1', stats[6], global_step)
-#             writer.add_scalar('train/AR10', stats[7], global_step)
-#             writer.add_scalar('train/AR100', stats[8], global_step)
-#             writer.add_scalar('train/AR_small', stats[9], global_step)
-#             writer.add_scalar('train/AR_medium', stats[10], global_step)
-#             writer.add_scalar('train/AR_large', stats[11], global_step)
-
-            if save_cp:
+                writer.add_scalar('train/Loss', loss.item(), global_step)
+                writer.add_scalar('train/loss_xy', loss_xy.item(), global_step)
+                writer.add_scalar('train/loss_wh', loss_wh.item(), global_step)
+                writer.add_scalar('train/loss_obj', loss_obj.item(), global_step)
+                writer.add_scalar('train/loss_cls', loss_cls.item(), global_step)
+                writer.add_scalar('train/loss_l2', loss_l2.item(), global_step)
+                writer.add_scalar('lr', scheduler.get_last_lr()[0] * config.batch, global_step)
+                
+                logging.debug('Train step_{}: loss : {},loss xy : {},loss wh : {},'
+                            'loss obj : {}，loss cls : {},loss l2 : {},lr : {}'
+                            .format(global_step, loss.item(), loss_xy.item(),
+                                    loss_wh.item(), loss_obj.item(),
+                                    loss_cls.item(), loss_l2.item(),
+                                    scheduler.get_last_lr()[0] * config.batch))
+        if save_cp:  # True
+            # 创建checkpoints文件夹
+            if not os.path.exists(config.checkpoints):
+                os.makedirs(config.checkpoints, exist_ok=True)  # exist_ok=True表示可以接受已经存在该文件夹，当exist_ok=False时文件夹存在会抛出错误
+                logging.info('Created checkpoint directory')
+            save_path = os.path.join(config.checkpoints, f'{save_prefix}{epoch + 1}.weights')                
+            # 考虑torch.nn.DataParallel特殊情况
+            if torch.cuda.device_count() > 1:
+                model.module.save_weights(save_path)
+            else:
+                model.save_weights(save_path)                
+            logging.info(f'Checkpoint {epoch + 1} saved !')
+            # 只保留最新keep_checkpoint_max个checkpoint，自动删除较早的checkpoint
+            saved_models.append(save_path)
+            if len(saved_models) > config.keep_checkpoint_max > 0:
+                model_to_remove = saved_models.popleft()
                 try:
-                    # os.mkdir(config.checkpoints)
-                    os.makedirs(config.checkpoints, exist_ok=True)
-                    logging.info('Created checkpoint directory')
-                except OSError:
-                    pass
-                save_path = os.path.join(config.checkpoints, f'{save_prefix}{epoch + 1}.pth')
-                torch.save(model.state_dict(), save_path)
-                logging.info(f'Checkpoint {epoch + 1} saved !')
-                saved_models.append(save_path)
-                if len(saved_models) > config.keep_checkpoint_max > 0:
-                    model_to_remove = saved_models.popleft()
-                    try:
-                        os.remove(model_to_remove)
-                    except:
-                        logging.info(f'failed to remove {model_to_remove}')
+                    os.remove(model_to_remove)
+                except:
+                    logging.info(f'failed to remove {model_to_remove}')
+
+        if config.evaluate_when_train:
+            try:
+                model.eval()
+                resFile = evaluate(model, config.val_label, config.dataset_dir, device==torch.device("cuda"), config.width, config.height)
+                if resFile is None:
+                    continue
+                stats = cocoEvaluate(tgtFile, resFile)
+
+                logging.info("===Val===")
+                logging.info("Epoch:[{:3}/{}],AP:{:.3f}|AP50:{:.3f}|AP75:{:.3f}|APs:{:.3f}|APm:{:.3f}|APl:{:.3f}".format(
+                    epoch + 1, epochs, stats[0], stats[1], stats[2], stats[3], stats[4], stats[5]))
+                logging.info("Epoch:[{:3}/{}],AR1:{:.3f}|AR10:{:.3f}|AR100:{:.3f}|ARs:{:.3f}|ARm:{:.3f}|ARl:{:.3f}".format(
+                    epoch + 1, epochs, stats[6], stats[7], stats[8], stats[9], stats[10], stats[11]))
+
+
+                writer.add_scalar('train/AP', stats[0], global_step)
+                writer.add_scalar('train/AP50', stats[1], global_step)
+                writer.add_scalar('train/AP75', stats[2], global_step)
+                writer.add_scalar('train/AP_small', stats[3], global_step)
+                writer.add_scalar('train/AP_medium', stats[4], global_step)
+                writer.add_scalar('train/AP_large', stats[5], global_step)
+                writer.add_scalar('train/AR1', stats[6], global_step)
+                writer.add_scalar('train/AR10', stats[7], global_step)
+                writer.add_scalar('train/AR100', stats[8], global_step)
+                writer.add_scalar('train/AR_small', stats[9], global_step)
+                writer.add_scalar('train/AR_medium', stats[10], global_step)
+                writer.add_scalar('train/AR_large', stats[11], global_step)
+            except Exception as e:
+                debugPrint("evaluate meets an exception, here is the exception info:")
+                traceback.print_exc()
+                debugPrint("ignore error in evaluate and continue training")
 
     writer.close()
-
-
-@torch.no_grad()
-def evaluate(model, data_loader, cfg, device, logger=None, **kwargs):
-    """ finished, tested
-    """
-    # cpu_device = torch.device("cpu")
-    model.eval()
-    # header = 'Test:'
-
-    coco = convert_to_coco_api(data_loader.dataset, bbox_fmt='coco')
-    coco_evaluator = CocoEvaluator(coco, iou_types = ["bbox"], bbox_fmt='coco')
-
-    for images, targets in data_loader:
-        model_input = [[cv2.resize(img, (cfg.w, cfg.h))] for img in images]
-        model_input = np.concatenate(model_input, axis=0)
-        model_input = model_input.transpose(0, 3, 1, 2)
-        model_input = torch.from_numpy(model_input).div(255.0)
-        model_input = model_input.to(device)
-        targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
-
-        if torch.cuda.is_available():
-            torch.cuda.synchronize()
-        model_time = time.time()
-        outputs = model(model_input)
-
-        # outputs = [{k: v.to(cpu_device) for k, v in t.items()} for t in outputs]
-        model_time = time.time() - model_time
-
-        # outputs = outputs.cpu().detach().numpy()
-        res = {}
-        # for img, target, output in zip(images, targets, outputs):
-        for img, target, boxes, confs in zip(images, targets, outputs[0], outputs[1]):
-            img_height, img_width = img.shape[:2]
-            # boxes = output[...,:4].copy()  # output boxes in yolo format
-            boxes = boxes.squeeze(2).cpu().detach().numpy()
-            boxes[...,2:] = boxes[...,2:] - boxes[...,:2] # Transform [x1, y1, x2, y2] to [x1, y1, w, h]
-            boxes[...,0] = boxes[...,0]*img_width
-            boxes[...,1] = boxes[...,1]*img_height
-            boxes[...,2] = boxes[...,2]*img_width
-            boxes[...,3] = boxes[...,3]*img_height
-            boxes = torch.as_tensor(boxes, dtype=torch.float32)
-            # confs = output[...,4:].copy()
-            confs = confs.cpu().detach().numpy()
-            labels = np.argmax(confs, axis=1).flatten()
-            labels = torch.as_tensor(labels, dtype=torch.int64)
-            scores = np.max(confs, axis=1).flatten()
-            scores = torch.as_tensor(scores, dtype=torch.float32)
-            res[target["image_id"].item()] = {
-                "boxes": boxes,
-                "scores": scores,
-                "labels": labels,
-            }
-        evaluator_time = time.time()
-        coco_evaluator.update(res)
-        evaluator_time = time.time() - evaluator_time
-
-    # gather the stats from all processes
-    coco_evaluator.synchronize_between_processes()
-
-    # accumulate predictions from all images
-    coco_evaluator.accumulate()
-    coco_evaluator.summarize()
-
-    return coco_evaluator
 
 
 def get_args(**kwargs):
     cfg = kwargs
     parser = argparse.ArgumentParser(description='Train the Model on images and target masks',
                                      formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    # parser.add_argument('-b', '--batch-size', metavar='B', type=int, nargs='?', default=2,
-    #                     help='Batch size', dest='batchsize')
+
     parser.add_argument('-l', '--learning-rate', metavar='LR', type=float, nargs='?', default=0.001,
                         help='Learning rate', dest='learning_rate')
-    parser.add_argument('-f', '--load', dest='load', type=str, default=None,
-                        help='Load model from a .pth file')
     parser.add_argument('-g', '--gpu', metavar='G', type=str, default='-1',
-                        help='GPU', dest='gpu')
+                        help="GPU, if multi, use ',' to separate", dest='gpu')
     parser.add_argument('-dir', '--data-dir', type=str, default=None,
                         help='dataset dir', dest='dataset_dir')
     parser.add_argument('-pretrained', type=str, default=None, help='pretrained yolov4.conv.137.pth')
     parser.add_argument('-pretrainedWeight', type=str, default=None, help='pretrained yolov4.conv.137')
     parser.add_argument('-classes', type=int, default=80, help='dataset classes')
     parser.add_argument('-train_label_path', dest='train_label', type=str, default='train.txt', help="train label path")
-    parser.add_argument(
-        '-optimizer', type=str, default='adam',
-        help='training optimizer',
-        dest='TRAIN_OPTIMIZER')
-    parser.add_argument(
-        '-iou-type', type=str, default='iou',
-        help='iou type (iou, giou, diou, ciou)',
-        dest='iou_type')
-    parser.add_argument(
-        '-keep-checkpoint-max', type=int, default=10,
-        help='maximum number of checkpoints to keep. If set 0, all checkpoints will be kept',
-        dest='keep_checkpoint_max')
-    args = vars(parser.parse_args())
 
-    # for k in args.keys():
-    #     cfg[k] = args.get(k)
+    args = vars(parser.parse_args())
     cfg.update(args)
 
     return edict(cfg)
@@ -702,7 +768,7 @@ def init_logger(log_file=None, log_dir=None, log_level=logging.INFO, mode='w', s
         os.makedirs(log_dir)
     log_file = os.path.join(log_dir, log_file)
     # 此处不能使用logging输出
-    print('log file path:' + log_file)
+    debugPrint('log file path:' + log_file)
 
     # logging是一个库，相当于高级版的print，这里是一些logging初始化工作
     logging.basicConfig(level=logging.DEBUG,
@@ -718,11 +784,6 @@ def init_logger(log_file=None, log_dir=None, log_level=logging.INFO, mode='w', s
         logging.getLogger('').addHandler(console)
 
     return logging
-
-
-def _get_date_str():
-    now = datetime.datetime.now()
-    return now.strftime('%Y-%m-%d_%H-%M')
 
 
 if __name__ == "__main__":
@@ -773,11 +834,14 @@ if __name__ == "__main__":
               config=cfg,
               epochs=cfg.TRAIN_EPOCHS,  # 300，在cfg.py中改
               device=device, 
-              save_cp=False,
+              save_cp=True,
               )
     except KeyboardInterrupt:
         # 在训练过程中，捕捉ctrl+c中断，保存模型到INTERRUPTED.pth
-        torch.save(model.state_dict(), 'INTERRUPTED.pth')
+        if torch.cuda.device_count() > 1:
+            model.module.save_weights("INTERRUPTED.weights")
+        else:
+            model.save_weights("INTERRUPTED.weights")    
         logging.info('Saved interrupt')
         try:
             sys.exit(0)
