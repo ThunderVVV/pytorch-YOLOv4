@@ -2,8 +2,15 @@
 
 This repository is forked from Tianxiaomo/pytorch-YOLOv4 and used to add some comments for personal study.
 
-- [ ] tool/darknet2pytorch.py
-- [ ] train.py
+- [x] Add comments to tool/darknet2pytorch.py
+- [x] Add comments to train.py
+- [x] Add comments to dataset.py
+
+And modify some codes for personal project.
+
+- [x] Fix codes to load and save darknet weights(in train.py)
+- [x] Modify codes of calculating mAP(in train.py)
+- [x] Fix bug of opencv stuck(in dataset.py)
 
 # Pytorch-YOLOv4
 
